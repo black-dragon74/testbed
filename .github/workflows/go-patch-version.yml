@@ -1,0 +1,92 @@
+---
+# End-to-end test of red-hat-storage/actions/go-patch-version.
+#
+# It uses the public registry.access.redhat.com/ubi9/go-toolset images as the
+# builder image instead of the credentialed brew.registry.redhat.io one, so
+# no registry secrets are needed: registry-username/registry-password are
+# omitted and the action skips the login step entirely.
+name: Bump Go version
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Do everything locally but skip the push and the PRs.
+        type: boolean
+        default: true
+      fail-fast:
+        description: Stop at the first branch that fails.
+        type: boolean
+        default: false
+  schedule:
+    # Every Monday at 05:00 UTC.
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install skopeo
+        run: |
+          set -euo pipefail
+          if ! command -v skopeo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends skopeo
+          fi
+          skopeo --version
+
+      - name: Bump Go version
+        id: bump
+        # yamllint disable-line rule:line-length
+        uses: red-hat-storage/actions/go-patch-version@6887b7caf08b5ca073b6a9616bc764251755b2c4  # v1.0.0
+        with:
+          # main            -> probes go-toolset:1.24  (label version 1.24.x)
+          # release-1.0     -> probes go-toolset:1.25  (label version 1.25.x)
+          # release-0.9     -> pinned, no image probe at all
+          # release-0.8     -> pinned below current, expected to be skipped
+          branches: |
+            main:1.24
+            release-1.0:1.25
+            release-0.9:=1.24.3
+            release-0.8:=1.22.0
+          builder-image-template: >-
+            registry.access.redhat.com/ubi9/go-toolset:{tag}
+          registry: registry.access.redhat.com
+          fail-fast: ${{ inputs.fail-fast || false }}
+
+          # Both go.mod files (root and api/) are discovered by `auto`.
+          go-mod-paths: auto
+          vendor: auto
+          containerfiles: auto
+          containerfile-image-prefixes: |
+            golang:
+            registry.access.redhat.com/ubi9/go-toolset:
+          version-files: |
+            build.env:GOLANG_VERSION
+            build.env:GO_MINOR_VERSION:minor
+
+          git-user-name: github-actions[bot]
+          # yamllint disable-line rule:line-length
+          git-user-email: 41898282+github-actions[bot]@users.noreply.github.com
+          pr-labels: enhancement
+          dry-run: ${{ inputs.dry-run || false }}
+
+          # No fork-repo: branches are pushed straight to this repository, so
+          # the workflow token (contents: write) is enough for both the push
+          # and the pull requests.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show outputs
+        run: |
+          set -euo pipefail
+          echo "bumped: ${BUMPED}"
+          echo "failed: ${FAILED}"
+          jq . <<<"${RESULTS}"
+        env:
+          RESULTS: ${{ steps.bump.outputs.results }}
+          BUMPED: ${{ steps.bump.outputs.bumped }}
+          FAILED: ${{ steps.bump.outputs.failed }}
